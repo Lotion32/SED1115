@@ -1,0 +1,15 @@
+from machine import Pin , ADC , PWM
+import time
+
+
+pot_pin = ADC(Pin(26))   #create value for our ADC controller 
+pwm_pin = PWM(Pin(16))    # create value for our pwm input
+
+pwm_pin.freq(1000)   # set our led to turn off and on 1000 times a second 
+
+while True:
+    pot_value = pot_pin.read_u16()    # create variable to store readings of our ADC 
+    
+    pwm_pin.duty_u16(pot_value)        # set the duty cycle to depend on our variables readings from our ADC 
+    
+    time.sleep(0.05)                 # give our picos some time to rest 
