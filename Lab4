@@ -1,0 +1,45 @@
+from machine import UART, Pin
+import sys, time, select
+
+# --- UART setup (UART1 on GP8=TX, GP9=RX) ---
+uart = UART(1, baudrate=9600, tx=Pin(8), rx=Pin(9))
+uart.init(bits=8, parity=None, stop=1)
+
+# --- Helpers ---
+def kb_line(timeout=0.1):
+    """Return a line from Thonny/USB keyboard if available, else None."""
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    if ready:
+        return sys.stdin.readline().strip()
+    return None
+
+def uart_send(text):
+    """Send a line to the peer and echo locally."""
+    try:
+        uart.write(text + "\n")
+        print(f"You: {text}")
+    except Exception as e:
+        print("Send error:", e)
+
+def uart_recv():
+    """Read any available line from peer and print it nicely."""
+    if not uart.any():
+        return
+    raw = uart.readline()
+    if not raw:
+        return
+    # Try to treat it as utf-8 text; fall back to byte-wise decoding.
+    try:
+        msg = raw.decode("utf-8", "ignore").strip()
+    except Exception:
+        msg = "".join(chr(b) for b in raw).strip()
+    if msg:
+        print(f"Partner: {msg}")
+
+# --- Main loop ---
+while True:
+    uart_recv()                 # 1) show any incoming line
+    line = kb_line(0.1)         # 2) grab user line if typed (non-blocking)
+    if line:
+        uart_send(line)
+    time.sleep(0.05)            # small idle to keep CPU cool
