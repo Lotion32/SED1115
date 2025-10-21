@@ -1,0 +1,57 @@
+from machine import Pin, I2C
+import time
+
+# --- setup ---
+i2c = I2C(1, sda=Pin(14), scl=Pin(15))
+button = Pin(10, Pin.IN, Pin.PULL_DOWN)
+
+# --- helpers ---
+def bcd_to_dec(bcd):
+    return (bcd >> 4) * 10 + (bcd & 0x0F)
+
+def get_seconds():
+    data = i2c.readfrom_mem(0x68, 0x00, 1)     # seconds register
+    return bcd_to_dec(data[0] & 0x7F)          # mask CH bit, convert BCD → decimal
+
+def save_line(text):
+    with open("elapsed_time.txt", "a") as f:   # append to file
+        f.write(str(text) + "\n")
+
+# --- state variables ---
+counting = False
+start_time = 0
+
+try:
+    while True:
+        if button.value() == 1:
+            time.sleep(0.025)  # debounce
+
+            if not counting:
+                # --- First press: start timer ---
+                start_time = get_seconds()
+                counting = True
+                save_line(f"START,{start_time}")
+                
+                # wait until button released
+                while button.value() == 1:
+                    time.sleep(0.01)
+
+            else:
+                # --- Second press: stop timer ---
+                end_time = get_seconds()
+                elapsed = (end_time - start_time) % 60  # handle 59 → 00 wrap
+                counting = False
+                save_line(f"ELAPSED,{elapsed}")
+                
+                print(f"Elapsed time: {elapsed} seconds.")
+                
+                # wait until button released
+                while button.value() == 1:
+                    time.sleep(0.01)
+
+        else:
+            time.sleep(0.01)
+
+except KeyboardInterrupt:
+    print("Program stopped manually.")
+
