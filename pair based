@@ -1,0 +1,81 @@
+from machine import Pin, UART, PWM , I2C
+import time
+from ads1x15 import ADS1015
+
+uart = UART(1, baudrate=9600 , tx=Pin(4) , rx =Pin(5)) #Setup UART 
+
+    
+max_duty = 65535  # set max for duty cycle 
+
+pwm_pin = PWM(Pin(15)) # set pwm to pin 15
+pwm_pin.freq(1000)   # send 3.3 volts to pin(15) 1000 times in a second 
+
+
+I2C_SDA = 14
+I2C_SCL = 15
+ADS1015_ADDR = 0x48
+
+i2c = I2C(1, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL))
+adc = ADS1015(i2c, ADS1015_ADDR, 1)
+print("I2C scan:", [hex(a) for a in i2c.scan()])  # <-- debug
+print("setup complete, entering loop") 
+
+def read_filtered_voltage():
+    raw = adc.read(0)
+    
+    measured_vlots = raw
+    return raw
+
+
+while True:
+    print("loop start")
+    
+    my_duty_value = int( 0.5 * max_duty)  # duty cycle calculation here 0.5 represent our duty cycle so 50% 
+    
+    pwm_pin.duty_u16(my_duty_value)  # pico 1 agknoladges and stores the duty cycle 
+        
+    uart.write(str(my_duty_value) + "\n")   # send our duty cycle over to pico 2
+    
+    time.sleep(1)  # goes to dodo for 1 second:
+received_duty = None
+print("uart.any() =", uart.any())
+
+  
+if uart.any():
+    line = uart.readline()
+    print("raw line from uart =", line)
+    if line:
+        try:
+            received_duty = int(line.decode().strip())
+        except ValueError:
+            received_duty = None
+    print("received_duty =", received_duty)
+      
+    if received_duty is not None:
+        # theoretical expected voltage from duty cycle
+        expected_v = (received_duty / MAX_DUTY) * VREF
+
+        # measured voltage from RC-filtered PWM (via external ADC)
+        measured_v = read_filtered_voltage()
+
+        print("Received duty:        ", received_duty)
+        print("Expected voltage (V): ", expected_v)
+        print("Measured voltage (V): ", measured_v)
+        print()
+
+    time.sleep(0.5)
+    
+    
+    
+    
+  # if uart.any(): # look for any message
+      #  messege = uart.read().decode() # read whatever message there is 
+      #  print(messege)   # strip the messege and print it
+        
+   # else:
+    #    print(" Invalid duty value") # error handeling
+   # break
+
+    #voltage = (int(messege) / max) * 3.3   #averge voltage calculation
+    #print(voltage)
+    
