@@ -55,8 +55,7 @@ if uart.any():
         # theoretical expected voltage from duty cycle
         expected_v = (received_duty / MAX_DUTY) * VREF
 
-        # measured voltage from RC-filtered PWM (via external ADC)
-        measured_v = read_filtered_voltage()
+  
 
      
     
