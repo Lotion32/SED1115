@@ -58,24 +58,5 @@ if uart.any():
         # measured voltage from RC-filtered PWM (via external ADC)
         measured_v = read_filtered_voltage()
 
-        print("Received duty:        ", received_duty)
-        print("Expected voltage (V): ", expected_v)
-        print("Measured voltage (V): ", measured_v)
-        print()
-
-    time.sleep(0.5)
-    
-    
-    
-    
-  # if uart.any(): # look for any message
-      #  messege = uart.read().decode() # read whatever message there is 
-      #  print(messege)   # strip the messege and print it
-        
-   # else:
-    #    print(" Invalid duty value") # error handeling
-   # break
-
-    #voltage = (int(messege) / max) * 3.3   #averge voltage calculation
-    #print(voltage)
+     
     
