@@ -4,57 +4,91 @@ from ads1x15 import ADS1015
 
 uart = UART(1, baudrate=9600 , tx=Pin(4) , rx =Pin(5)) #Setup UART 
 
-    
 max_duty = 65535  # set max for duty cycle 
-
-pwm_pin = PWM(Pin(15)) # set pwm to pin 15
-pwm_pin.freq(1000)   # send 3.3 volts to pin(15) 1000 times in a second 
-
-
-I2C_SDA = 14
+VREF = 3.3 # the max voltage that could be sent to a pin 
+pwm_pin = PWM(Pin(18)) # set pwm to pin 18
+pwm_pin.freq(1000)   # send 3.3 volts to pin(15) 1000 times in a second
+I2C_SDA = 14 # this is from ads1x15
 I2C_SCL = 15
 ADS1015_ADDR = 0x48
+ADS1015_PWM = 2
 
-i2c = I2C(1, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL))
-adc = ADS1015(i2c, ADS1015_ADDR, 1)
-print("I2C scan:", [hex(a) for a in i2c.scan()])  # <-- debug
-print("setup complete, entering loop") 
-
-def read_filtered_voltage():
-    raw = adc.read(0)
-    
-    measured_vlots = raw
-    return raw
+i2c = I2C(1, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL)) # setting up i2c
+adc = ADS1015(i2c, ADS1015_ADDR, 1) # defining ADC 
 
 
-while True:
-    print("loop start")
-    
-    my_duty_value = int( 0.5 * max_duty)  # duty cycle calculation here 0.5 represent our duty cycle so 50% 
-    
-    pwm_pin.duty_u16(my_duty_value)  # pico 1 agknoladges and stores the duty cycle 
+
+def read_filtered_voltage(): # define our function 
+    raw = adc.read(0, ADS1015_PWM)
+    measured_vlots = raw * 2
+    return measured_vlots
+def process_reading(duty_cycle):
+    loop_count = 0
+    error=False
+    diff_value = None
+    diff_value2 = None 
+    while loop_count < 4:
+        loop_count +=1
+        print("Loop Number:", loop_count)
+        my_duty_value = int(duty_cycle * max_duty )  # duty cycle calculation here 0.5 represent our duty cycle so 50%
+            
+        uart.write(str(my_duty_value) + "\n")   # send our duty cycle over to pico 2
         
-    uart.write(str(my_duty_value) + "\n")   # send our duty cycle over to pico 2
-    
-    time.sleep(1)  # goes to dodo for 1 second:
-received_duty = None
-print("uart.any() =", uart.any())
+        time.sleep(1)  # goes to dodo for 1 second:
+        received_duty = None  # initializes / or resets the received duty before trying to read anything 
+        
+        if uart.any() == 0:
+            print("messege not received")
+            error=True
+            break
+        
+        elif uart.any():
+            line = uart.readline()
+            if line:     #check if line received anything 
+                try:     
+                    received_duty = int(line.decode().strip())
+                    pwm_pin.duty_u16(received_duty)
 
-  
-if uart.any():
-    line = uart.readline()
-    print("raw line from uart =", line)
-    if line:
-        try:
-            received_duty = int(line.decode().strip())
-        except ValueError:
-            received_duty = None
-    print("received_duty =", received_duty)
-      
-    if received_duty is not None:
-        # theoretical expected voltage from duty cycle
-        expected_v = (received_duty / MAX_DUTY) * VREF
+                except ValueError:
+                    received_duty = None   # if our line is corrupt or anyhing then just ser received duty to emptyness 
+            print("received_duty =", received_duty)
+            
+            if received_duty is not None: # if we do get anything good 
+                expected_voltage = (received_duty / max_duty) * VREF # does a rough estimate of what we should get
+                
+                measured_voltage = read_filtered_voltage()/1000  # measured voltage from RC-filtered PWM
+                
+                if loop_count == 1:
+                    diff_value = abs(measured_voltage - expected_voltage)
+                if loop_count > 1 and loop_count<4:
+                    diff_value2 = abs(measured_voltage - expected_voltage)
+                    if diff_value == diff_value2:
+                        print("PWM→RC likely disconnected")
+                    else:
+                        diff_value = diff_value2
+                        
 
+
+        print("rough expected voltage (V):", expected_voltage)
+        print("Measured voltage (V): ", measured_voltage)
+        
+        time.sleep(1)
+    print(loop_count, " loops of values finished!")
+    if error ==True :
+        print("ERROR: check your Receiving pins")
+# my main the start
+while True:
+    user_input = input("What duty cycle would you want? ")
+    try:
+        value = float(user_input)
+        if 0 <= value <= 100:
+            duty_cycle = value / 100
+            print("Duty cycle set to:", duty_cycle)
+            process_reading(duty_cycle)
+        else:
+            print("Your duty cycle has to be from 0–100 percent.")
+    except ValueError:
+        print("Please enter a valid number (no letters or symbols).")
   
 
      
