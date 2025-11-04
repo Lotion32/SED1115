@@ -1,0 +1,77 @@
+from machine import Pin, UART, PWM , I2C
+import time
+from ads1x15 import ADS1015
+
+uart = UART(1, baudrate=9600 , tx=Pin(4) , rx =Pin(5)) #Setup UART 
+
+max_duty = 65535  # set max for duty cycle 
+VREF = 3.3 # the max voltage that could be sent to a pin 
+pwm_pin = PWM(Pin(18)) # set pwm to pin 18
+pwm_pin.freq(1000)   # send 3.3 volts to pin(15) 1000 times in a second
+I2C_SDA = 14 # this is from ads1x15
+I2C_SCL = 15
+ADS1015_ADDR = 0x48
+ADS1015_PWM = 2
+
+i2c = I2C(1, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL)) # setting up i2c
+adc = ADS1015(i2c, ADS1015_ADDR, 1) # defining ADC 
+
+
+
+def read_filtered_voltage(): # define our function 
+    raw = adc.read(0, ADS1015_PWM)
+    measured_vlots = raw * 2
+    return measured_vlots
+def process_reading(duty_cycle):
+    error=False
+    diff_value = None
+
+    my_duty_value = int(duty_cycle * max_duty )  # duty cycle calculation which is the actual pwm duty_value which is the pecentage of the max 
+        
+    uart.write(str(my_duty_value) + "\n")   # send our duty cycle over to pico 2
+    
+    time.sleep(1)  # goes to dodo for 1 second:
+    received_duty = None  # initializes / or resets the received duty before trying to read anything 
+    
+    if uart.any() == 0: # if theres no messege 
+        print("messege not received") 
+        error=True # set error to true 
+    elif uart.any(): # look for messages 
+        line = uart.readline() # read messages 
+        if line:     #check if line received anything 
+            try:     
+                received_duty = int(line.decode().strip()) # decode it and make it nice 
+                pwm_pin.duty_u16(received_duty)
+                time.sleep(1)# give it time for the I2C to process
+            except ValueError:
+                received_duty = None   # if our line is corrupt or anyhing then just ser received duty to emptyness 
+        print("received_duty =", received_duty) 
+        
+        if received_duty is not None: # if we do get anything good 
+            expected_voltage = (received_duty / max_duty) * VREF # does a rough estimate of what we should get
+            
+            measured_voltage = read_filtered_voltage()/1000  # measured voltage from RC-filtered PWM
+            
+            
+            diff_value = abs(measured_voltage - expected_voltage) # take the difrence from what we measure and want we expect 
+            if diff_value > 0.2: # if its bigger than 20% then theres likley something wrong
+                print("PWM→RC likely disconnected")
+            
+        print("rough expected voltage (V):", expected_voltage) 
+        print("Measured voltage (V): ", measured_voltage)
+
+    if error ==True : 
+        print("ERROR: check your Receiving pins") 
+# my main the start
+while True:
+    user_input = input("What duty cycle would you want? ") # asking the user what theyd like 
+    try:
+        value = float(user_input) # make the value a float so we can get spefic values 
+        if 0 <= value <= 100: # only let the value be from 0 - 100 
+            duty_cycle = value / 100 # math
+            print("Duty cycle set to:", duty_cycle) 
+            process_reading(duty_cycle) # run our function
+        else:
+            print("Your duty cycle has to be from 0–100 percent.")
+    except ValueError:
+        print("Please enter a valid number (no letters or symbols).")
