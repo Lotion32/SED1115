@@ -1,0 +1,184 @@
+# ============================================
+# 2-pot → (x,y) → IK → 2 servos + ADS1015 feedback
+# Pico W • MicroPython
+# ============================================
+from machine import Pin, ADC, PWM, I2C
+import math, time
+
+# ---------- Hardware mapping (edit as needed) ----------
+# Pots -> target position
+POT_X_PIN = 26          # GP26 / ADC0
+POT_Y_PIN = 27          # GP27 / ADC1
+
+# Servos (PWM at 50 Hz). Change pins if your board routes differently.
+SERVO_A_PIN = 0        # shoulder
+SERVO_B_PIN = 1       # elbow
+
+# Optional pen servo/button (not required for IK)
+# PEN_BTN_PIN = 22
+# PEN_SERVO_PIN = 20
+
+# ADS1015 (feedback) on I2C1: GP14=SDA, GP15=SCL
+I2C_SDA = 14
+I2C_SCL = 15
+ADS_ADDR = 0x48         # on your accessory board
+
+# ADS channel map on this trainer board
+AIN0_SERVO_A_FB = 0     # shoulder feedback
+AIN1_SERVO_B_FB = 1     # elbow feedback
+AIN2_PWM_RC     = 2     # RC-filtered PWM header (debug)
+AIN3_SPARE      = 3
+
+# ---------- Robot geometry ----------
+L1 = 155.0              # mm (upper link)
+L2 = 155.0              # mm (forearm)
+MARGIN = 15.0           # keep away from extremes to avoid singularities
+
+# ---------- Servo config ----------
+SERVO_HZ        = 50.0  # 50 Hz hobby servos
+PERIOD_MS       = 1000.0 / SERVO_HZ
+MIN_PW_MS       = 1.00  # 0° pulse width (adjust if needed)
+MAX_PW_MS       = 2.00  # 180° pulse width (adjust if needed)
+MAX_U16         = 65535
+
+# Some brackets mount servos "flipped". Set True to reverse angle.
+SERVO_A_REVERSE = False
+SERVO_B_REVERSE = True   # flip if your elbow moves opposite to math
+
+# ---------- Feedback → angle calibration (tune later) ----------
+# Measure min/max feedback volts for each joint across full motion, then set here:
+FB_A_VMIN, FB_A_VMAX = 0.50, 2.50   # shoulder feedback voltage range (guess)
+FB_B_VMIN, FB_B_VMAX = 0.50, 2.50   # elbow feedback voltage range (guess)
+
+# =========================================================
+
+# --- Small helpers ---
+def clamp(a, lo, hi): return lo if a < lo else hi if a > hi else a
+
+def map_range(v, in_lo, in_hi, out_lo, out_hi):
+    return out_lo + (out_hi - out_lo) * ((v - in_lo) / (in_hi - in_lo))
+
+def servo_u16_for_angle(angle_deg):
+    """Angle (deg) -> 16-bit duty for 50Hz PWM."""
+    angle_deg = clamp(angle_deg, 0.0, 180.0)
+    pw = MIN_PW_MS + (angle_deg / 180.0) * (MAX_PW_MS - MIN_PW_MS)  # ms
+    duty = (pw / PERIOD_MS) * MAX_U16
+    return int(duty)
+
+def ik_two_link(x, y, L1=L1, L2=L2):
+    """2-link planar inverse kinematics: returns (alpha_deg, beta_deg). Raises ValueError if unreachable."""
+    r2 = x*x + y*y
+    c = (r2 - L1*L1 - L2*L2) / (2.0 * L1 * L2)
+    if c < -1.0 or c > 1.0:
+        raise ValueError("target outside reach")
+    beta = math.acos(c)
+    alpha = math.atan2(y, x) - math.atan2(L2*math.sin(beta), L1 + L2*math.cos(beta))
+    return math.degrees(alpha), math.degrees(beta)
+
+# --- Basic smoothing for noisy pots ---
+class Avg:
+    def __init__(self, n=6): self.n=n; self.buf=[]; self.sum=0
+    def add(self, v):
+        self.buf.append(v); self.sum += v
+        if len(self.buf) > self.n: self.sum -= self.buf.pop(0)
+        return self.sum/len(self.buf)
+
+avg_x = Avg(6)
+avg_y = Avg(6)
+
+# ---------- Setup IO ----------
+pot_x = ADC(Pin(POT_X_PIN))
+pot_y = ADC(Pin(POT_Y_PIN))
+
+servo_a = PWM(Pin(SERVO_A_PIN)); servo_a.freq(int(SERVO_HZ))
+servo_b = PWM(Pin(SERVO_B_PIN)); servo_b.freq(int(SERVO_HZ))
+
+# Optional pen controls (leave commented if unused)
+# pen_btn = Pin(PEN_BTN_PIN, Pin.IN, Pin.PULL_UP)
+# pen_servo = PWM(Pin(PEN_SERVO_PIN)); pen_servo.freq(int(SERVO_HZ))
+# PEN_UP_DEG, PEN_DOWN_DEG = 30, 75
+
+# ---------- ADS1015 setup ----------
+i2c = I2C(1, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL))
+try:
+    from ads1x15 import ADS1015
+    found = i2c.scan()
+    print("I2C scan:", [hex(a) for a in found])
+    if ADS_ADDR not in found:
+        print("⚠️  ADS1015 not found at 0x48 — check green SDA/SCL jumpers.")
+    adc = ADS1015(i2c, ADS_ADDR, 1)
+    have_ads = True
+except Exception as e:
+    print("⚠️  ADS init failed:", e)
+    have_ads = False
+
+def read_ads_mv(chan):
+    """Return (mV, V) for a given ADS channel. If missing, returns (None, None)."""
+    if not have_ads: return None, None
+    mv = adc.read(0, chan)  # this driver returns approx millivolts
+    return mv, (mv/1000.0)
+
+def fb_volts_to_angle(v, vmin, vmax, reverse=False):
+    if v is None: return None
+    a = map_range(clamp(v, vmin, vmax), vmin, vmax, 0.0, 180.0)
+    if reverse: a = 180.0 - a
+    return a
+
+# ---------- Main loop ----------
+print("\nRunning…  (CTRL+C to stop)\n")
+last_print = time.ticks_ms()
+
+while True:
+    # 1) Read & smooth pots
+    rx = avg_x.add(pot_x.read_u16())
+    ry = avg_y.add(pot_y.read_u16())
+
+    # 2) Map to a safe square workspace
+    reach = L1 + L2 - MARGIN
+    x = map_range(rx, 0, MAX_U16, MARGIN, reach)
+    y = map_range(ry, 0, MAX_U16, MARGIN, reach)
+
+    # 3) IK -> desired joint angles
+    try:
+        a_deg, b_deg = ik_two_link(x, y)
+
+        # Honor servo orientation
+        if SERVO_A_REVERSE: a_deg = 180.0 - a_deg
+        if SERVO_B_REVERSE: b_deg = 180.0 - b_deg
+
+        # 4) Drive servos
+        servo_a.duty_u16(servo_u16_for_angle(a_deg))
+        servo_b.duty_u16(servo_u16_for_angle(b_deg))
+
+    except ValueError:
+        # unreachable target: hold last command (do nothing) and print warning occasionally
+        if time.ticks_diff(time.ticks_ms(), last_print) > 250:
+            print(f"Out of reach: x={x:.1f}, y={y:.1f}")
+            last_print = time.ticks_ms()
+        time.sleep(0.03)
+        continue
+
+    # 5) Read feedback volts
+    mvA, vA = read_ads_mv(AIN0_SERVO_A_FB)
+    mvB, vB = read_ads_mv(AIN1_SERVO_B_FB)
+    mvRC, vRC = read_ads_mv(AIN2_PWM_RC)
+
+    # 6) Convert feedback volts → estimated angles (linear; refine after calibration)
+    a_fb = fb_volts_to_angle(vA, FB_A_VMIN, FB_A_VMAX, reverse=SERVO_A_REVERSE)
+    b_fb = fb_volts_to_angle(vB, FB_B_VMIN, FB_B_VMAX, reverse=SERVO_B_REVERSE)
+
+    # 7) Print a compact status line ~10 Hz
+    if time.ticks_diff(time.ticks_ms(), last_print) > 100:
+        last_print = time.ticks_ms()
+        def fmt(v, w=6, p=2): 
+            return (" " * (w - len("nan"))) + "nan" if v is None else f"{v:>{w}.{p}f}"
+        print(
+            f"x={x:6.1f}  y={y:6.1f}  "
+            f"α_cmd={a_deg:6.1f}°  β_cmd={b_deg:6.1f}°   "
+            f"α_fbV={fmt(vA,5,3)}  β_fbV={fmt(vB,5,3)}   "
+            f"α_est={fmt(a_fb,6,1)}°  β_est={fmt(b_fb,6,1)}°   "
+            f"RC={fmt(vRC,5,3)}V"
+        )
+
+    time.sleep(0.03)
+
